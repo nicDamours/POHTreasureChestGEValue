@@ -31,8 +31,8 @@ public interface POHTreasureChestGEValueConfig extends Config
 
 	@ConfigItem(
 			keyName = "showExact",
-			name = "Show exact bank value",
-			description = "Show exact bank value",
+			name = "Show exact value",
+			description = "Show exact value",
 			position = 3
 	)
 	default boolean showExact()

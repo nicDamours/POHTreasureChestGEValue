@@ -1,11 +1,13 @@
 package com.github.nicDamours;
 
+import com.github.nicDamours.Enums.ComponentID;
+import com.github.nicDamours.Enums.EventScriptID;
+import com.github.nicDamours.Exceptions.InvalidContainerException;
 import com.github.nicDamours.Objects.ContainerPrices;
 import com.google.inject.Provides;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.*;
 import net.runelite.api.events.ScriptPostFired;
-import net.runelite.api.events.WidgetLoaded;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
@@ -19,6 +21,7 @@ import javax.inject.Inject;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -54,64 +57,44 @@ public class POHTreasureChestGEValue extends Plugin {
 
     @Subscribe
     public void onScriptPostFired(ScriptPostFired event) throws Exception {
-        if(event.getScriptId() == 3534) {
-            Widget treasureChestTitle = client.getWidget(44236802);
+        if(event.getScriptId() == EventScriptID.POH_CUSTOM_BUILD) {
+            Widget treasureChestTitle = client.getWidget(ComponentID.POH_TREASURE_ROOM_WIDGET);
 
-            if(treasureChestTitle.getChildren().length >= 2) {
-                String title = treasureChestTitle.getChildren()[1].getText();
+            if(this.hasTextWidget(treasureChestTitle)) {
+                Widget treasureChestTitleText = Objects.requireNonNull(treasureChestTitle.getChildren())[1];
+                String title = treasureChestTitleText.getText();
 
-                log.debug("text: " + treasureChestTitle.getText());
+                try {
+                    int selectedTierEnumID = this.getClueTierFromTitle(title);
 
-                Pattern pattern = Pattern.compile(this.tierRegexp, Pattern.CASE_INSENSITIVE);
+                    List<Integer> hardClueItems = this.getPohPossibleItemsForTier(selectedTierEnumID);
 
-                Matcher matcher = pattern.matcher(title);
+                    ItemContainer itemContainers = client.getItemContainer(ComponentID.POH_CONTAINER_ID);
 
+                    if(itemContainers == null) {
+                        throw new InvalidContainerException();
+                    }
 
-                if(!matcher.matches()) {
-                    throw new Exception("Could not determine selected tier");
+                    Item[] relevantItemsInStorage = this.filterItems(itemContainers.getItems(), hardClueItems);
+
+                    if(relevantItemsInStorage == null) {
+                        return;
+                    }
+
+                    ContainerPrices price = calculate(relevantItemsInStorage);
+
+                    if(price == null) {
+                        return;
+                    }
+
+                    String formattedPrice = createValueText(price.getGePrice(), price.getHighAlchPrice());
+
+                    treasureChestTitleText.setText(title + formattedPrice);
+                } catch(InvalidContainerException exception) {
+                    log.debug("opened interface is not treasure chest, abording.");
+                } catch(Exception exception) {
+                    log.debug("Error while retrieving container info: " + exception.getMessage());
                 }
-
-                String selectedTier = matcher.group(1);
-
-                int selectedTierEnumID;
-
-                switch(selectedTier.toLowerCase()) {
-                    case "beginner":
-                        selectedTierEnumID = EnumID.POH_COSTUME_CLUE_BEGINNER;
-                        break;
-                    case "easy":
-                        selectedTierEnumID = EnumID.POH_COSTUME_CLUE_EASY;
-                        break;
-                    case "medium":
-                        selectedTierEnumID = EnumID.POH_COSTUME_CLUE_MEDIUM;
-                        break;
-                    case "hard":
-                        selectedTierEnumID = EnumID.POH_COSTUME_CLUE_HARD;
-                        break;
-                    case "elite":
-                        selectedTierEnumID = EnumID.POH_COSTUME_CLUE_ELITE;
-                        break;
-                    case "master":
-                        selectedTierEnumID = EnumID.POH_COSTUME_CLUE_MASTER;
-                        break;
-                    default:
-                        throw new Exception("invalid clue tier " + selectedTier.toLowerCase());
-                };
-
-
-                List<Integer> hardClueItems = this.getPohPossibleItemsForTier(selectedTierEnumID);
-
-                ItemContainer itemContainers = client.getItemContainer(33405);
-
-                Item[] relevantItemsInStorage = this.filterItems(itemContainers.getItems(), hardClueItems);
-
-                ContainerPrices price = calculate(relevantItemsInStorage);
-
-                log.debug("found " + relevantItemsInStorage.length + " items");
-
-                String formattedPrice = createValueText(price.getGePrice(), price.getHighAlchPrice());
-
-                treasureChestTitle.getChildren()[1].setText(title + formattedPrice);
             }
         }
     }
@@ -122,6 +105,42 @@ public class POHTreasureChestGEValue extends Plugin {
         return configManager.getConfig(POHTreasureChestGEValueConfig.class);
     }
 
+    private int getClueTierFromTitle(String title)  throws Exception {
+        String selectedTier = this.getTitleMatch(title);
+
+        switch(selectedTier.toLowerCase()) {
+            case "beginner": return EnumID.POH_COSTUME_CLUE_BEGINNER;
+            case "easy": return EnumID.POH_COSTUME_CLUE_EASY;
+            case "medium": return EnumID.POH_COSTUME_CLUE_MEDIUM;
+            case "hard": return EnumID.POH_COSTUME_CLUE_HARD;
+            case "elite": return EnumID.POH_COSTUME_CLUE_ELITE;
+            case "master": return EnumID.POH_COSTUME_CLUE_MASTER;
+            default: throw new InvalidContainerException();
+        }
+    }
+
+    private String getTitleMatch(String title) throws Exception {
+        Pattern pattern = Pattern.compile(this.tierRegexp, Pattern.CASE_INSENSITIVE);
+
+        Matcher matcher = pattern.matcher(title);
+
+        if(!matcher.matches()) {
+            throw new InvalidContainerException();
+        }
+
+        return matcher.group(1);
+    }
+
+    private boolean hasTextWidget(Widget treasureChestTitle) {
+        return treasureChestTitle != null && treasureChestTitle.getChildren() != null && treasureChestTitle.getChildren().length >= 2;
+    }
+
+    /**
+     * Took from Runelite's BankPlugin
+     * @see https://github.com/runelite/runelite/blob/500e294fc06884734cbf74590446930363f20334/runelite-client/src/main/java/net/runelite/client/plugins/bank/BankPlugin.java#L605
+     * @param itemId
+     * @return
+     */
     private int getHaPrice(int itemId)
     {
         switch (itemId)
@@ -135,6 +154,12 @@ public class POHTreasureChestGEValue extends Plugin {
         }
     }
 
+    /**
+     * Took from Runelite's BankPlugin
+     * @see https://github.com/runelite/runelite/blob/500e294fc06884734cbf74590446930363f20334/runelite-client/src/main/java/net/runelite/client/plugins/bank/BankPlugin.java#L578
+     * @param items
+     * @return
+     */
     @Nullable
     ContainerPrices calculate(@Nullable Item[] items)
     {
@@ -194,10 +219,18 @@ public class POHTreasureChestGEValue extends Plugin {
         return allItems;
     }
 
-    private Item[] filterItems(Item[] allItems, List<Integer> wantedItems) {
+    @Nullable
+    private Item[] filterItems(@Nullable Item[] allItems, List<Integer> wantedItems) {
         return Arrays.stream(allItems).filter(x -> wantedItems.contains(x.getId())).toArray(Item[]::new);
     }
 
+    /**
+     * Took from RuneLite's BankPlugin
+     * @see https://github.com/runelite/runelite/blob/500e294fc06884734cbf74590446930363f20334/runelite-client/src/main/java/net/runelite/client/plugins/bank/BankPlugin.java#L386
+     * @param gePrice
+     * @param haPrice
+     * @return
+     */
     private String createValueText(long gePrice, long haPrice)
     {
         StringBuilder stringBuilder = new StringBuilder();
